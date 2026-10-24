@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, type ComponentRef } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { Grid, Html, Line, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
@@ -23,12 +23,8 @@ export default function BuildingScene({ snapshot, selectedId, floorFilter, follo
   const focusY = floorFilter === "all"
     ? ((snapshot.floors.at(-1)?.index ?? 0) * floorHeight) / 2
     : floorFilter * floorHeight;
-  const selectedEdge = selected?.route_edges[0] ? edgeMap.get(selected.route_edges[0]) : undefined;
-  const selectedPoint = selected ? getPersonPoint(selected, snapshot, nodeMap, selectedEdge) : null;
-  const personFocus = followPerson ? selectedPoint : null;
-  const target: [number, number, number] = personFocus ?? [0, focusY, 0];
-  const cameraPosition: [number, number, number] = personFocus
-    ? [target[0] + 11, target[1] + 8, target[2] + 14]
+  const cameraPosition: [number, number, number] = followPerson
+    ? [11, 8, 14]
     : floorFilter === "all" ? [26, focusY + 18, 32] : [14, focusY + 11, 21];
 
   return (
@@ -52,19 +48,94 @@ export default function BuildingScene({ snapshot, selectedId, floorFilter, follo
           onSelectPerson={onSelectPerson}
           onHover={setHovered}
         />
-        <OrbitControls
-          makeDefault
-          target={target}
-          zoomToCursor
-          enableDamping
-          dampingFactor={0.12}
-          minDistance={8}
-          maxDistance={64}
-          maxPolarAngle={Math.PI * 0.49}
+        <SceneCamera
+          snapshot={snapshot}
+          selected={selected}
+          selectedId={selectedId}
+          followPerson={followPerson}
+          floorFilter={floorFilter}
+          floorCenterY={focusY}
         />
       </Canvas>
       {hovered && <div className="scene-hover-label">{hovered}</div>}
     </div>
+  );
+}
+
+function SceneCamera({
+  snapshot, selected, selectedId, followPerson, floorFilter, floorCenterY,
+}: {
+  snapshot: Snapshot;
+  selected: Person | null;
+  selectedId: string;
+  followPerson: boolean;
+  floorFilter: FloorFilter;
+  floorCenterY: number;
+}) {
+  const controlsRef = useRef<ComponentRef<typeof OrbitControls>>(null);
+  const nodeMap = useMemo(() => new Map(snapshot.nodes.map((node) => [node.id, node])), [snapshot.nodes]);
+  const edgeMap = useMemo(() => new Map(snapshot.edges.map((edge) => [edge.id, edge])), [snapshot.edges]);
+  const previousFollow = useRef(followPerson);
+  const previousSelectedId = useRef(selectedId);
+  const previousFloor = useRef(floorFilter);
+  const transitionDistance = useRef<number | null>(null);
+
+  useFrame((_, delta) => {
+    const controls = controlsRef.current;
+    if (!controls) return;
+
+    const focusChanged = followPerson !== previousFollow.current || selectedId !== previousSelectedId.current;
+    const floorChanged = floorFilter !== previousFloor.current;
+    if (focusChanged) {
+      const currentDistance = controls.object.position.distanceTo(controls.target);
+      transitionDistance.current = followPerson
+        ? (currentDistance > 25 ? 18 : THREE.MathUtils.clamp(currentDistance, 13, 20))
+        : floorFilter === "all" ? 42 : 27;
+    } else if (floorChanged && !followPerson) {
+      transitionDistance.current = floorFilter === "all" ? 42 : 27;
+    }
+    previousFollow.current = followPerson;
+    previousSelectedId.current = selectedId;
+    previousFloor.current = floorFilter;
+
+    let desiredTarget: THREE.Vector3;
+    if (followPerson && selected) {
+      const edgeId = selected.route_edges[0];
+      const edge = edgeId ? edgeMap.get(edgeId) : undefined;
+      const point = getPersonPoint(selected, snapshot, nodeMap, edge);
+      desiredTarget = new THREE.Vector3(point[0], point[1] + 0.5, point[2]);
+    } else {
+      desiredTarget = new THREE.Vector3(0, floorCenterY, 0);
+    }
+
+    const targetAlpha = 1 - Math.exp(-8 * Math.max(0, delta));
+    const targetShift = desiredTarget.sub(controls.target).multiplyScalar(targetAlpha);
+    controls.target.add(targetShift);
+    controls.object.position.add(targetShift);
+
+    if (transitionDistance.current !== null) {
+      const offset = controls.object.position.clone().sub(controls.target);
+      if (offset.lengthSq() > 0.001) {
+        const distance = THREE.MathUtils.damp(offset.length(), transitionDistance.current, 6, delta);
+        offset.setLength(distance);
+        controls.object.position.copy(controls.target).add(offset);
+        if (Math.abs(distance - transitionDistance.current) < 0.15) transitionDistance.current = null;
+      }
+    }
+    controls.update();
+  });
+
+  return (
+    <OrbitControls
+      ref={controlsRef}
+      makeDefault
+      zoomToCursor
+      enableDamping
+      dampingFactor={0.12}
+      minDistance={8}
+      maxDistance={64}
+      maxPolarAngle={Math.PI * 0.49}
+    />
   );
 }
 
@@ -190,8 +261,7 @@ function SceneContent({
 
       {snapshot.people.map((person) => {
         const node = nodeMap.get(person.current_node);
-        const next = person.route[1] ? nodeMap.get(person.route[1]) : undefined;
-        if (!node || (floorFilter !== "all" && !visibleFloor(node.floor) && !visibleFloor(next?.floor ?? -1))) return null;
+        if (!node || !visibleFloor(node.floor)) return null;
         return <PersonMarker
           key={person.id}
           person={person}

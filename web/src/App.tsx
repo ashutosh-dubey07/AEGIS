@@ -129,6 +129,13 @@ export default function App() {
     () => snapshot?.people.find((person) => person.id === selectedId) ?? null,
     [snapshot, selectedId],
   );
+  useEffect(() => {
+    if (!followPerson || !selectedPerson || !snapshot) return;
+    const currentFloor = snapshot.nodes.find((node) => node.id === selectedPerson.current_node)?.floor;
+    if (currentFloor !== undefined) {
+      setFloorFilter((floor) => floor === currentFloor ? floor : currentFloor);
+    }
+  }, [followPerson, selectedPerson?.current_node, snapshot?.nodes]);
   useEffect(() => setAiReview(null), [selectedId]);
   useEffect(() => {
     if (!voiceGuidance || selectedPerson?.accessibility_profile !== "Low vision" || !snapshot) {
@@ -290,7 +297,7 @@ export default function App() {
               return <article className="assistance-case" key={person.id}>
                 <div className="assistance-case-heading">
                   <div><strong>{person.id}</strong><span>{node?.label ?? person.current_node} · {node?.floor === 0 ? "Ground" : `Floor ${node?.floor ?? "?"}`}</span></div>
-                  <button className="assistance-inspect" onClick={() => { setSelectedId(person.id); setFloorFilter("all"); setFollowPerson(true); }}>Inspect</button>
+                  <button className="assistance-inspect" onClick={() => { setSelectedId(person.id); setFollowPerson(true); }}>Inspect</button>
                 </div>
                 <p className="assistance-reason">{person.assistance_reason ?? "No safe route to an exit is currently available."}</p>
                 {person.assistance_blockers.length > 0 && <ul className="assistance-blockers">
@@ -311,7 +318,7 @@ export default function App() {
               <div className="assistance-location" key={group.nodeId}>
                 <div><strong>{group.label}</strong><span>{group.floor === 0 ? "Ground" : `Floor ${group.floor}`} · {group.people.length} {group.people.length === 1 ? "person" : "people"}</span></div>
                 <div className="assistance-person-chips">
-                  {group.people.map((person) => <button key={person.id} onClick={() => { setSelectedId(person.id); setFloorFilter("all"); setFollowPerson(true); }}>{person.id}</button>)}
+                  {group.people.map((person) => <button key={person.id} onClick={() => { setSelectedId(person.id); setFollowPerson(true); }}>{person.id}</button>)}
                 </div>
               </div>
             ))}
@@ -343,7 +350,7 @@ export default function App() {
                     selectedId={selectedId}
                     floorFilter={floorFilter}
                     followPerson={followPerson}
-                    onSelectPerson={(id) => { setSelectedId(id); setFloorFilter("all"); setFollowPerson(true); }}
+                    onSelectPerson={(id) => { setSelectedId(id); setFollowPerson(true); }}
                   />
                 ) : <div className="scene-loading">Starting local simulation…</div>}
                 <div className="scene-scale">3D BUILDING MODEL <span>·</span> LIVE ROUTES</div>
@@ -352,11 +359,11 @@ export default function App() {
                 <div className="eyebrow">PERSON VIEW</div>
                 <label className="field-label" htmlFor="person-select">Inspect individual</label>
                 <div className="select-wrap">
-                  <select id="person-select" value={selectedId} onChange={(event) => { setSelectedId(event.target.value); setFloorFilter("all"); setFollowPerson(true); }}>
+                  <select id="person-select" value={selectedId} onChange={(event) => { setSelectedId(event.target.value); setFollowPerson(true); }}>
                     {snapshot?.people.map((person) => <option key={person.id} value={person.id}>{person.id} · {person.accessibility_profile} · {snapshot.nodes.find((node) => node.id === person.current_node)?.label ?? person.current_node}</option>)}
                   </select><ChevronDown size={15} />
                 </div>
-                <label className="toggle-line"><input type="checkbox" checked={followPerson} onChange={(event) => setFollowPerson(event.target.checked)} /><span>Focus selected person</span></label>
+                <label className="toggle-line"><input type="checkbox" checked={followPerson} onChange={(event) => setFollowPerson(event.target.checked)} /><span>Follow selected person and floor</span></label>
                 {selectedPerson && <PersonCard person={selectedPerson} snapshot={snapshot!} voiceGuidance={voiceGuidance} onVoiceGuidanceChange={setVoiceGuidance} />}
                 <div className="person-rail-hint">Select a marker in the building or use this list.</div>
               </aside>
