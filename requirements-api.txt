@@ -1,4 +1,4 @@
 # Local REST and WebSocket server for the browser-based 3D client.
 fastapi>=0.115,<1
 pydantic>=2.14,<3
-uvicorn>=0.34,<1
+uvicorn[standard]>=0.34,<1
