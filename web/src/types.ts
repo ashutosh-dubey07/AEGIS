@@ -1,4 +1,4 @@
-export type NodeKind = "room" | "junction" | "stairs" | "exit";
+export type NodeKind = "room" | "junction" | "stairs" | "lift" | "exit";
 export type FloorFilter = "all" | number;
 
 export interface BuildingNode {
@@ -22,6 +22,8 @@ export interface BuildingEdge {
   capacity: number;
   is_stair: boolean;
   is_narrow: boolean;
+  is_accessible: boolean;
+  is_evacuation_lift: boolean;
   blocked: boolean;
   caution: boolean;
 }
@@ -32,6 +34,11 @@ export interface Person {
   current_node: string;
   status: string;
   priority: number;
+  accessibility_profile: string;
+  priority_reason: string;
+  support_needs: string;
+  communication_mode: string;
+  movement_speed_factor: number;
   route: string[];
   route_edges: string[];
   traversed_edges: string[];
@@ -111,6 +118,7 @@ export interface ScenarioOptions {
   building_profile: string;
   floors?: number;
   rooms_per_wing?: number;
+  include_accessibility_personas?: boolean;
 }
 
 export interface AIReviewItem {

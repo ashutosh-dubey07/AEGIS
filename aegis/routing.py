@@ -7,7 +7,7 @@ from collections import Counter
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
-from aegis.models import Building
+from aegis.models import Building, PERSON_PROFILE_SPECS
 
 
 @dataclass(frozen=True)
@@ -18,13 +18,15 @@ class Route:
     cost: float
 
 
-def _edge_cost(edge, load: int, caution: bool) -> float:
+def _edge_cost(edge, load: int, caution: bool, person_profile: str = "Standard") -> float:
     # Every term is non-negative. Load adds expected delay; a caution area
     # remains usable but costs more than a normal passage.
     capacity = max(1, edge.capacity_per_step)
     congestion_delay = edge.travel_time * 0.75 * load / capacity
-    caution_penalty = 8.0 if caution else 0.0
-    return edge.travel_time + congestion_delay + caution_penalty
+    profile = PERSON_PROFILE_SPECS.get(person_profile, PERSON_PROFILE_SPECS["Standard"])
+    stair_factor = profile.stair_cost_multiplier if edge.is_stair else 1.0
+    caution_penalty = 8.0 * profile.caution_cost_multiplier if caution else 0.0
+    return edge.travel_time * stair_factor + congestion_delay * stair_factor + caution_penalty
 
 
 def find_route(
@@ -37,6 +39,7 @@ def find_route(
     caution_edges: Iterable[str] = (),
     edge_load: Mapping[str, int] | None = None,
     exit_load: Mapping[str, int] | None = None,
+    person_profile: str = "Standard",
 ) -> Route | None:
     """Find the least-cost safe route from start to one of the exits."""
     if start not in building.nodes:
@@ -47,6 +50,7 @@ def find_route(
     caution_edge_set = set(caution_edges)
     edge_load = edge_load or Counter()
     exit_load = exit_load or Counter()
+    profile = PERSON_PROFILE_SPECS.get(person_profile, PERSON_PROFILE_SPECS["Standard"])
     if start in blocked_node_set:
         return None
 
@@ -70,13 +74,16 @@ def find_route(
         for neighbor, edge in building.neighbors(node_id):
             if edge.id in blocked_edge_set or neighbor.id in blocked_node_set:
                 continue
+            if profile.step_free_route and (edge.is_stair or not edge.is_accessible):
+                continue
             step_cost = _edge_cost(
                 edge,
                 int(edge_load.get(edge.id, 0)),
                 edge.id in caution_edge_set,
+                person_profile,
             )
             if neighbor.id in caution_node_set:
-                step_cost += 8.0
+                step_cost += 8.0 * profile.caution_cost_multiplier
             if neighbor.id in exits:
                 exit_capacity = max(1, building.nodes[neighbor.id].exit_capacity)
                 step_cost += 3.0 * int(exit_load.get(neighbor.id, 0)) / exit_capacity

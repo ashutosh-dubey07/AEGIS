@@ -14,6 +14,7 @@ KIND_STYLE = {
     "room": ("#64748b", "circle"),
     "junction": ("#334155", "circle"),
     "stairs": ("#475569", "square"),
+    "lift": ("#4d789d", "diamond"),
     "exit": ("#15803d", "triangle-up"),
 }
 
@@ -99,8 +100,9 @@ def _person_viewport(state: SimulationState, floor: int, person: Person | None):
 
     x_min, x_max = min(x for x, _ in points), max(x for x, _ in points)
     y_min, y_max = min(y for _, y in points), max(y for _, y in points)
-    x_range = _fit_axis(x_min, x_max, minimum=-0.5, maximum=22.5, min_span=13.5, padding=2.0)
-    y_range = _fit_axis(y_min, y_max, minimum=0.0, maximum=14.0, min_span=8.5, padding=1.7)
+    low_vision = person.accessibility_profile == "Low vision"
+    x_range = _fit_axis(x_min, x_max, minimum=-0.5, maximum=22.5, min_span=10.0 if low_vision else 13.5, padding=1.4 if low_vision else 2.0)
+    y_range = _fit_axis(y_min, y_max, minimum=0.0, maximum=14.0, min_span=6.8 if low_vision else 8.5, padding=1.2 if low_vision else 1.7)
     return list(x_range), [y_range[1], y_range[0]]
 
 
@@ -117,6 +119,10 @@ def build_route_instructions(state: SimulationState, person: Person) -> list[str
         here = building.nodes[person.route[index]]
         following = building.nodes[person.route[index + 1]]
         edge = building.edges[edge_id]
+
+        if edge.is_evacuation_lift:
+            directions.append(f"Take the designated evacuation lift to {FLOOR_LABELS[following.floor]}.")
+            continue
 
         if edge.is_stair:
             stair = here if here.kind == "stairs" else following
@@ -191,6 +197,11 @@ def _add_floorplan_shapes(fig: go.Figure, nodes_on_floor: dict) -> None:
                 type="rect", x0=node.x - 0.55, y0=5.95, x1=node.x + 0.55, y1=8.05,
                 line={"color": "#64748b", "width": 1.5}, fillcolor="#e2e8f0", layer="below",
             )
+        elif node.kind == "lift":
+            fig.add_shape(
+                type="rect", x0=node.x - 0.48, y0=4.55, x1=node.x + 0.48, y1=5.45,
+                line={"color": "#4d789d", "width": 1.5}, fillcolor="#eaf2f8", layer="below",
+            )
 
     fig.add_shape(
         type="rect", x0=-0.15, y0=6.45, x1=0.65, y1=7.55,
@@ -222,6 +233,7 @@ def render_floor_map(state: SimulationState, floor: int, selected_person_id: str
     edge_styles = {
         "Open corridor": ("#94a3b8", "solid", 3),
         "Narrow corridor": ("#64748b", "dash", 4),
+        "Not step-free": ("#9b6681", "dash", 4),
         "Caution area": ("#d97706", "dash", 5),
         "Closed passage": ("#b91c1c", "dash", 6),
     }
@@ -236,6 +248,8 @@ def render_floor_map(state: SimulationState, floor: int, selected_person_id: str
             label = "Closed passage"
         elif edge.id in state.caution_edges or a.id in state.caution_nodes or b.id in state.caution_nodes:
             label = "Caution area"
+        elif not edge.is_accessible:
+            label = "Not step-free"
         elif edge.is_narrow:
             label = "Narrow corridor"
         else:
@@ -271,7 +285,7 @@ def render_floor_map(state: SimulationState, floor: int, selected_person_id: str
         a, b = building.nodes[edge.a], building.nodes[edge.b]
         if a.floor == floor and b.floor == floor:
             x, y = (a.x + b.x) / 2, (a.y + b.y) / 2 - 0.55
-        elif edge.is_stair and floor in {a.floor, b.floor}:
+        elif (edge.is_stair or edge.is_evacuation_lift) and floor in {a.floor, b.floor}:
             landing = a if a.floor == floor else b
             x, y = landing.x, 5.55
         else:
@@ -295,7 +309,7 @@ def render_floor_map(state: SimulationState, floor: int, selected_person_id: str
             if a.floor == floor and b.floor == floor:
                 traveled_x.extend((a.x, b.x, None))
                 traveled_y.extend((a.y, b.y, None))
-            elif edge.is_stair and floor in {a.floor, b.floor}:
+            elif (edge.is_stair or edge.is_evacuation_lift) and floor in {a.floor, b.floor}:
                 landing = a if a.floor == floor else b
                 stair_x.append(landing.x)
                 stair_y.append(5.7)
@@ -342,7 +356,7 @@ def render_floor_map(state: SimulationState, floor: int, selected_person_id: str
                 step_x.append((route_start[0] + route_end[0]) / 2)
                 step_y.append((route_start[1] + route_end[1]) / 2)
                 step_text.append(str(step_number))
-            elif edge.is_stair and floor in {source.floor, destination.floor}:
+            elif (edge.is_stair or edge.is_evacuation_lift) and floor in {source.floor, destination.floor}:
                 landing = source if source.floor == floor else destination
                 step_x.append(landing.x)
                 step_y.append(5.7)
@@ -365,8 +379,8 @@ def render_floor_map(state: SimulationState, floor: int, selected_person_id: str
                 hovertemplate="Route step %{text}<extra></extra>",
             ))
 
-    marker_sizes = {"room": 9, "junction": 13, "stairs": 22, "exit": 22}
-    marker_names = {"room": "Rooms", "junction": "Corridor junctions", "stairs": "Stairwells", "exit": "Safe exits"}
+    marker_sizes = {"room": 9, "junction": 13, "stairs": 22, "lift": 20, "exit": 22}
+    marker_names = {"room": "Rooms", "junction": "Corridor junctions", "stairs": "Stairwells", "lift": "Evacuation lift lobbies", "exit": "Safe exits"}
     for kind, (base_color, symbol) in KIND_STYLE.items():
         nodes = [node for node in nodes_on_floor.values() if node.kind == kind]
         if not nodes:
@@ -381,6 +395,8 @@ def render_floor_map(state: SimulationState, floor: int, selected_person_id: str
                 f"{node.label}<br>{'UP' if floor == 0 else 'DOWN' if floor == 2 else 'UP / DOWN'}"
                 for node in nodes
             ]
+        elif kind == "lift":
+            labels = ["LIFT" for _node in nodes]
         elif kind == "exit":
             labels = [node.label.replace(" Assembly", "") for node in nodes]
             text_positions = ["top right" if node.x < 11 else "top left" for node in nodes]
@@ -388,7 +404,7 @@ def render_floor_map(state: SimulationState, floor: int, selected_person_id: str
             labels = [node.label for node in nodes]
         else:
             labels = [node.label for node in nodes]
-        positions = {"room": "middle center", "junction": "top center", "stairs": "bottom center"}
+        positions = {"room": "middle center", "junction": "top center", "stairs": "bottom center", "lift": "bottom center"}
         fig.add_trace(go.Scatter(
             x=[node.x for node in nodes], y=[node.y for node in nodes], mode="markers+text",
             name=marker_names[kind], text=labels,
@@ -459,6 +475,7 @@ def render_floor_map(state: SimulationState, floor: int, selected_person_id: str
     ptext: list[str] = []
     phover: list[str] = []
     pcolor: list[str] = []
+    pline: list[str] = []
     psymbol: list[str] = []
     for node_id, people in occupants.items():
         for person in sorted(people, key=lambda item: item.id):
@@ -468,10 +485,12 @@ def render_floor_map(state: SimulationState, floor: int, selected_person_id: str
             py.append(y)
             ptext.append(person.id)
             phover.append(
-                f"{person.id}<br>{node.label}<br>Status: {person.status}<br>"
-                f"Progress: {person.movement_progress:.0%}<br>Priority: {person.priority_score:.2f}"
+                f"{person.id}<br>{person.accessibility_profile}<br>{node.label}<br>Status: {person.status}<br>"
+                f"Progress: {person.movement_progress:.0%}<br>Priority: {person.priority_score:.2f} · {person.accessibility_profile}"
             )
-            pcolor.append("#171a1d" if person.status == "Needs Assistance" else ("#7b4bb7" if person.id == selected_person_id else "#18834b"))
+            has_accessibility_profile = person.accessibility_profile != "Standard"
+            pcolor.append("#171a1d" if person.status == "Needs Assistance" else "#db5b91" if has_accessibility_profile else "#7b4bb7" if person.id == selected_person_id else "#18834b")
+            pline.append("#7b4bb7" if person.id == selected_person_id else "#171a1d" if person.status == "Needs Assistance" else "white")
             psymbol.append("circle")
     if px:
         fig.add_trace(go.Scatter(
@@ -482,7 +501,7 @@ def render_floor_map(state: SimulationState, floor: int, selected_person_id: str
         fig.add_trace(go.Scatter(
             x=px, y=py, mode="markers+text", name=f"Selected person · {selected_person_id}", text=ptext,
             textposition="top center", textfont={"size": 11, "color": "#1e293b"},
-            marker={"size": 18, "color": pcolor, "symbol": psymbol, "line": {"color": "white", "width": 3}},
+            marker={"size": 18, "color": pcolor, "symbol": psymbol, "line": {"color": pline, "width": 3}},
             hovertext=phover, hoverinfo="text",
         ))
 

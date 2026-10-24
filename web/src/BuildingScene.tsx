@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
-import { Grid, Line, OrbitControls } from "@react-three/drei";
+import { Grid, Html, Line, OrbitControls } from "@react-three/drei";
 import * as THREE from "three";
 import type { BuildingEdge, BuildingNode, FloorFilter, Person, Snapshot } from "./types";
 
@@ -11,10 +11,11 @@ interface Props {
   snapshot: Snapshot;
   selectedId: string;
   floorFilter: FloorFilter;
+  followPerson: boolean;
   onSelectPerson: (id: string) => void;
 }
 
-export default function BuildingScene({ snapshot, selectedId, floorFilter, onSelectPerson }: Props) {
+export default function BuildingScene({ snapshot, selectedId, floorFilter, followPerson, onSelectPerson }: Props) {
   const [hovered, setHovered] = useState("");
   const nodeMap = useMemo(() => new Map(snapshot.nodes.map((node) => [node.id, node])), [snapshot.nodes]);
   const edgeMap = useMemo(() => new Map(snapshot.edges.map((edge) => [edge.id, edge])), [snapshot.edges]);
@@ -22,22 +23,25 @@ export default function BuildingScene({ snapshot, selectedId, floorFilter, onSel
   const focusY = floorFilter === "all"
     ? ((snapshot.floors.at(-1)?.index ?? 0) * floorHeight) / 2
     : floorFilter * floorHeight;
-  const cameraPosition: [number, number, number] = floorFilter === "all"
-    ? [26, focusY + 18, 32]
-    : [14, focusY + 11, 21];
+  const selectedEdge = selected?.route_edges[0] ? edgeMap.get(selected.route_edges[0]) : undefined;
+  const selectedPoint = selected ? getPersonPoint(selected, snapshot, nodeMap, selectedEdge) : null;
+  const personFocus = followPerson ? selectedPoint : null;
+  const target: [number, number, number] = personFocus ?? [0, focusY, 0];
+  const cameraPosition: [number, number, number] = personFocus
+    ? [target[0] + 11, target[1] + 8, target[2] + 14]
+    : floorFilter === "all" ? [26, focusY + 18, 32] : [14, focusY + 11, 21];
 
   return (
     <div className="three-canvas-wrap">
       <Canvas
         key={snapshot.session_id}
-        shadows
-        dpr={[1, 1.7]}
+        dpr={[1, 1.25]}
         camera={{ position: cameraPosition, fov: floorFilter === "all" ? 43 : 40, near: 0.1, far: 180 }}
         gl={{ antialias: true, alpha: false }}
       >
         <color attach="background" args={["#edf1f4"]} />
         <ambientLight intensity={1.35} />
-        <directionalLight position={[8, 20, 12]} intensity={1.6} castShadow shadow-mapSize={[1024, 1024]} />
+        <directionalLight position={[8, 20, 12]} intensity={1.6} />
         <directionalLight position={[-12, 9, -10]} intensity={0.45} />
         <SceneContent
           snapshot={snapshot}
@@ -50,7 +54,7 @@ export default function BuildingScene({ snapshot, selectedId, floorFilter, onSel
         />
         <OrbitControls
           makeDefault
-          target={[0, focusY, 0]}
+          target={target}
           zoomToCursor
           enableDamping
           dampingFactor={0.12}
@@ -80,7 +84,7 @@ function SceneContent({
   const visibleEdges = snapshot.edges.filter((edge) => {
     const a = nodeMap.get(edge.a);
     const b = nodeMap.get(edge.b);
-    return a && b && (visibleFloor(a.floor) || (edge.is_stair && visibleFloor(b.floor)));
+    return a && b && (visibleFloor(a.floor) || ((edge.is_stair || edge.is_evacuation_lift) && visibleFloor(b.floor)));
   });
   const visibleNodes = snapshot.nodes.filter((node) => visibleFloor(node.floor));
   const selectedStart = selected?.route[0] ? nodeMap.get(selected.route[0]) : undefined;
@@ -121,8 +125,8 @@ function SceneContent({
       {visibleEdges.map((edge) => {
         const a = nodeMap.get(edge.a)!;
         const b = nodeMap.get(edge.b)!;
-        const color = edge.blocked ? "#b94545" : edge.caution ? "#c5872c" : edge.is_narrow ? "#8995a0" : "#abb6bf";
-        return <Beam key={edge.id} a={a} b={b} color={color} radius={edge.is_stair ? 0.11 : edge.is_narrow ? 0.07 : 0.055} />;
+        const color = edge.blocked ? "#b94545" : edge.caution ? "#c5872c" : edge.is_evacuation_lift ? "#577a9b" : edge.is_narrow ? "#8995a0" : "#abb6bf";
+        return <Beam key={edge.id} a={a} b={b} color={color} radius={edge.is_stair || edge.is_evacuation_lift ? 0.11 : edge.is_narrow ? 0.07 : 0.055} />;
       })}
 
       {visibleNodes.map((node) => (
@@ -206,12 +210,13 @@ function SceneContent({
 
 function BuildingNodeMesh({ node, onHover }: { node: BuildingNode; onHover: (label: string) => void }) {
   const [x, y, z] = pointOf(node);
-  const color = node.blocked ? "#b94545" : node.caution ? "#d59a43" : node.kind === "exit" ? "#19816e" : node.kind === "stairs" ? "#768797" : node.kind === "junction" ? "#cbd4dc" : "#e8edf1";
+  const color = node.blocked ? "#b94545" : node.caution ? "#d59a43" : node.kind === "exit" ? "#19816e" : node.kind === "stairs" ? "#768797" : node.kind === "lift" ? "#4d789d" : node.kind === "junction" ? "#cbd4dc" : "#e8edf1";
   const geometry = node.kind === "room" ? <boxGeometry args={[1.15, 0.44, 0.92]} />
     : node.kind === "exit" ? <boxGeometry args={[0.9, 0.48, 0.8]} />
       : node.kind === "stairs" ? <boxGeometry args={[0.65, 1.5, 0.65]} />
+        : node.kind === "lift" ? <boxGeometry args={[0.78, 1.15, 0.78]} />
         : <cylinderGeometry args={[0.27, 0.3, 0.18, 12]} />;
-  return <mesh position={[x, y + (node.kind === "stairs" ? 0.72 : 0.09), z]} castShadow receiveShadow
+  return <mesh position={[x, y + (node.kind === "stairs" ? 0.72 : node.kind === "lift" ? 0.55 : 0.09), z]} castShadow receiveShadow
     onPointerOver={(event) => { event.stopPropagation(); onHover(`${node.label} · ${node.kind}`); }}
     onPointerOut={() => onHover("")}
   >
@@ -250,23 +255,25 @@ function PersonMarker({
   onHover: (label: string) => void;
 }) {
   const mesh = useRef<THREE.Mesh>(null);
-  const markerColor = person.status === "Needs Assistance" ? "#171a1d" : selected ? "#7b4bb7" : "#18834b";
+  const hasAccessibilityProfile = person.accessibility_profile !== "Standard";
+  const markerColor = person.status === "Needs Assistance" ? "#171a1d" : hasAccessibilityProfile ? "#db5b91" : selected ? "#7b4bb7" : "#18834b";
   useFrame(() => {
     if (!mesh.current) return;
     const edgeId = person.route_edges[0];
     const edge = edgeId ? edgeMap.get(edgeId) : undefined;
     const point = getPersonPoint(person, snapshot, nodeMap, edge);
     mesh.current.position.set(point[0], point[1] + 0.5, point[2]);
-    const pulse = selected ? 1 + Math.sin(performance.now() / 240) * 0.055 : 1;
-    mesh.current.scale.setScalar(pulse);
   });
   return <mesh ref={mesh} position={[0, 0.5, 0]} onClick={(event) => { event.stopPropagation(); onSelect(); }}
-    onPointerOver={(event) => { event.stopPropagation(); onHover(`${person.id} · ${person.status}`); }}
+    onPointerOver={(event) => { event.stopPropagation(); onHover(`${person.id} · ${person.accessibility_profile} · ${person.status}`); }}
     onPointerOut={() => onHover("")}
   >
-    <sphereGeometry args={[selected ? 0.23 : 0.16, 16, 16]} />
+    <sphereGeometry args={[selected ? 0.27 : 0.21, 12, 12]} />
     <meshStandardMaterial color={markerColor} emissive={markerColor} emissiveIntensity={person.status === "Needs Assistance" ? 0 : selected ? 0.15 : 0.04} roughness={0.38} />
-    {selected && <mesh scale={1.6}><sphereGeometry args={[0.23, 16, 16]} /><meshBasicMaterial color="#a68aca" transparent opacity={0.2} depthWrite={false} /></mesh>}
+    {selected && <mesh scale={1.6}><sphereGeometry args={[0.27, 12, 12]} /><meshBasicMaterial color="#a68aca" transparent opacity={0.2} depthWrite={false} /></mesh>}
+    {selected && <Html position={[0, 0.58, 0]} center distanceFactor={18} style={{ pointerEvents: "none" }}>
+      <div className="scene-person-label">{person.id} Â· {person.accessibility_profile}</div>
+    </Html>}
   </mesh>;
 }
 
@@ -280,8 +287,8 @@ function getPersonPoint(
   if (!current) return [0, 0, 0];
   const nextId = person.route[1];
   const next = nextId ? nodeMap.get(nextId) : undefined;
-  if (!next || !edge || person.movement_progress <= 0) return pointOf(current);
-  const duration = Math.max(snapshot.movement_ticks_per_unit, Math.ceil(edge.travel_time * snapshot.movement_ticks_per_unit));
+  if (!next || !edge) return pointOf(current);
+  const duration = Math.max(snapshot.movement_ticks_per_unit, Math.ceil(edge.travel_time * snapshot.movement_ticks_per_unit / Math.max(0.1, person.movement_speed_factor)));
   const elapsed = Math.max(0, Math.min(0.99, (performance.now() - snapshot.receivedAt) / 1000));
   let progress = person.movement_progress;
   if (snapshot.running && person.status === "Moving") {

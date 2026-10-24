@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: aegis-api
+    runtime: python
+    plan: free
+    region: singapore
+    buildCommand: pip install -r requirements-api.txt
+    startCommand: uvicorn aegis_api.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.14.8
+      - key: CORS_ALLOWED_ORIGINS
+        fromService:
+          type: web
+          name: aegis-web
+          envVarKey: RENDER_EXTERNAL_URL
+
+  - type: web
+    name: aegis-web
+    runtime: static
+    rootDir: web
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: NODE_VERSION
+        value: 24.22.1
+      - key: VITE_API_BASE
+        fromService:
+          type: web
+          name: aegis-api
+          envVarKey: RENDER_EXTERNAL_URL

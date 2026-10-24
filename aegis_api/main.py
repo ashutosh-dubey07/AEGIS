@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from aegis.building import BUILDING_PROFILES, build_generated_building, validate_building
 from aegis.emergency import EMERGENCY_SERVICES, build_emergency_brief
-from aegis.models import Person, SimulationState
+from aegis.models import PERSON_PROFILE_SPECS, Person, SimulationState
 from aegis.simulation import (
     HAZARD_OPTIONS,
     MOVEMENT_TICKS_PER_TRAVEL_UNIT,
@@ -30,9 +30,14 @@ from aegis.simulation import (
 
 
 app = FastAPI(title="AEGIS Local Simulation API", version="0.2.0")
+extra_origins = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv("CORS_ALLOWED_ORIGINS", "").split(",")
+    if origin.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", *extra_origins],
     allow_origin_regex=(
         r"^http://(?:localhost|127\.0\.0\.1|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|"
         r"172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}):5173$"
@@ -61,6 +66,7 @@ class ScenarioRequest(BaseModel):
     building_profile: str = "Office"
     floors: int | None = Field(default=None, ge=3, le=5)
     rooms_per_wing: int | None = Field(default=None, ge=2, le=6)
+    include_accessibility_personas: bool = True
 
 
 class CommandRequest(BaseModel):
@@ -125,9 +131,16 @@ def _assistance_diagnostics(state: SimulationState, person: Person) -> tuple[str
     reachable = {current.id}
     pending = [current.id]
     blockers: set[str] = set()
+    inaccessible_links: set[str] = set()
+    profile = PERSON_PROFILE_SPECS[person.accessibility_profile]
     while pending:
         node_id = pending.pop()
         for neighbor, edge in building.neighbors(node_id):
+            if profile.step_free_route and (edge.is_stair or not edge.is_accessible):
+                inaccessible_links.add(
+                    f"{edge.id} ({'stairs' if edge.is_stair else 'not mapped step-free'})"
+                )
+                continue
             if edge.id in state.blocked_edges:
                 blockers.add(
                     f"Passage {label(edge.a)} ↔ {label(edge.b)} is closed ({closure_cause('edge', edge.id)})"
@@ -148,7 +161,12 @@ def _assistance_diagnostics(state: SimulationState, person: Person) -> tuple[str
 
     if blockers:
         details = "; ".join(sorted(blockers)[:3])
+        if profile.step_free_route:
+            details += "; this profile also requires a step-free route"
         return f"No open path from this location reaches an exit. Blocking points: {details}.", sorted(blockers)[:4]
+    if profile.step_free_route:
+        links = ", ".join(sorted(inaccessible_links)[:3]) or "no designated step-free connection"
+        return f"No connected step-free route from this location reaches an exit. The graph offers {links} along the available paths.", sorted(inaccessible_links)[:4]
     return "No connected safe path from this location to an exit is available in the current building graph.", []
 
 
@@ -182,6 +200,8 @@ def _snapshot(session_id: str, runtime: Runtime) -> dict:
                 "id": edge.id, "a": edge.a, "b": edge.b, "travel_time": edge.travel_time,
                 "width_m": edge.width_m, "capacity": edge.capacity_per_step,
                 "is_stair": edge.is_stair, "is_narrow": edge.is_narrow,
+                "is_accessible": edge.is_accessible,
+                "is_evacuation_lift": edge.is_evacuation_lift,
                 "blocked": edge.id in state.blocked_edges,
                 "caution": edge.id in state.caution_edges,
             }
@@ -192,6 +212,11 @@ def _snapshot(session_id: str, runtime: Runtime) -> dict:
                 "id": person.id, "start_node": person.start_node,
                 "current_node": person.current_node, "status": person.status,
                 "priority": round(person.priority_score, 3), "route": list(person.route),
+                "accessibility_profile": person.accessibility_profile,
+                "priority_reason": PERSON_PROFILE_SPECS[person.accessibility_profile].priority_reason,
+                "support_needs": PERSON_PROFILE_SPECS[person.accessibility_profile].support_needs,
+                "communication_mode": PERSON_PROFILE_SPECS[person.accessibility_profile].communication_mode,
+                "movement_speed_factor": PERSON_PROFILE_SPECS[person.accessibility_profile].movement_speed_factor,
                 "route_edges": list(person.route_edges), "assigned_exit": person.assigned_exit,
                 "traversed_edges": list(person.traversed_edges),
                 "reroutes": person.reroutes, "queued_edge": person.queued_edge,
@@ -260,6 +285,7 @@ def create_session(request: ScenarioRequest) -> dict:
         raise HTTPException(status_code=500, detail={"building_validation": errors})
     state = create_scenario(
         request.person_count, seed, request.incident_type, building=building,
+        include_accessibility_personas=request.include_accessibility_personas,
     )
     session_id = secrets.token_urlsafe(12)
     runtime = Runtime(state=state, profile=request.building_profile)
@@ -395,6 +421,9 @@ def _ai_review_context(runtime: Runtime, person_id: str) -> dict:
     route = [node_label(node_id) for node_id in person.route[:8]]
     selected_person = {
         "id": person.id,
+        "accessibility_profile": person.accessibility_profile,
+        "support_needs": PERSON_PROFILE_SPECS[person.accessibility_profile].support_needs,
+        "priority_reason": PERSON_PROFILE_SPECS[person.accessibility_profile].priority_reason,
         "status": person.status,
         "location": node_label(person.current_node),
         "assigned_exit": node_label(person.assigned_exit),
@@ -407,7 +436,9 @@ def _ai_review_context(runtime: Runtime, person_id: str) -> dict:
         f"person:{person.id}",
         f"Selected person {person.id} is {person.status} at {selected_person['location']}, assigned exit {selected_person['assigned_exit']}, "
         f"progress {selected_person['progress_percent']}%, reroutes {person.reroutes}, "
-        f"backtracking {str(person.backtracking).lower()}, remaining route: {' -> '.join(route) or 'none'}.",
+        f"backtracking {str(person.backtracking).lower()}, profile {person.accessibility_profile}, "
+        f"support need {selected_person['support_needs']}, priority reason {selected_person['priority_reason']}, "
+        f"remaining route: {' -> '.join(route) or 'none'}.",
     )
     add_fact("scenario:reroutes", f"The routing engine has recorded {state.rerouted_total} reroutes so far.")
 

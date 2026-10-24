@@ -56,22 +56,32 @@ def build_sample_building() -> Building:
             narrow = floor == 1 and index == 2
             add_edge(Edge(
                 f"{prefix}-CORRIDOR-{index:02d}", f"{prefix}-J{index}", f"{prefix}-J{index + 1}",
-                1.2, 0.9 if narrow else 2.4, 1 if narrow else 4, is_narrow=narrow,
+                1.2, 1.2 if narrow else 2.4, 1 if narrow else 4, is_narrow=narrow,
             ))
         add_edge(Edge(f"{prefix}-STAIR-ACCESS-W", f"{prefix}-J1", west_stair, 1.0, 1.6, 2))
         add_edge(Edge(f"{prefix}-STAIR-ACCESS-E", f"{prefix}-J5", east_stair, 1.0, 1.6, 2))
+
+        lift_id = f"{prefix}-LIFT"
+        add_node(Node(lift_id, floor, 11.0, 5.0, "lift", "Evacuation lift lobby"))
+        add_edge(Edge(f"{prefix}-LIFT-ACCESS", lift_id, f"{prefix}-J3", 0.8, 1.8, 3))
 
         if floor == 0:
             add_node(Node("G-EXIT-W", 0, 0.2, 7.0, "exit", "West Assembly Exit", exit_capacity=2))
             add_node(Node("G-EXIT-E", 0, 21.8, 7.0, "exit", "East Assembly Exit", exit_capacity=2))
             add_edge(Edge("G-EXIT-LINK-W", west_stair, "G-EXIT-W", 1.0, 2.0, 3))
             add_edge(Edge("G-EXIT-LINK-E", east_stair, "G-EXIT-E", 1.0, 2.0, 3))
+            add_edge(Edge("G-ACCESSIBLE-EXIT-W", "G-J1", "G-EXIT-W", 1.2, 2.0, 3))
+            add_edge(Edge("G-ACCESSIBLE-EXIT-E", "G-J5", "G-EXIT-E", 1.2, 2.0, 3))
 
     for lower_prefix, upper_prefix, floor in (("G", "F1", 0), ("F1", "F2", 1)):
         for side in ("W", "E"):
             lower = f"{lower_prefix}-STAIR-{side}"
             upper = f"{upper_prefix}-STAIR-{side}"
-            add_edge(Edge(f"STAIR-{side}-F{floor}-F{floor + 1}", lower, upper, 2.0, 1.6, 2, is_stair=True))
+            add_edge(Edge(f"STAIR-{side}-F{floor}-F{floor + 1}", lower, upper, 2.0, 1.6, 2, is_stair=True, is_accessible=False))
+        add_edge(Edge(
+            f"LIFT-F{floor}-F{floor + 1}", f"{lower_prefix}-LIFT", f"{upper_prefix}-LIFT",
+            2.5, 1.8, 2, is_accessible=True, is_evacuation_lift=True,
+        ))
 
     return Building(nodes=nodes, edges=edges)
 
@@ -142,12 +152,17 @@ def build_generated_building(
                 1.0, 1.6, 2,
             ))
 
+        lift_id = f"{prefix}-LIFT"
+        add_node(Node(lift_id, floor, 11.0, 5.0, "lift", "Evacuation lift lobby"))
+        center_junction = junction_ids[len(junction_ids) // 2]
+        add_edge(Edge(f"{prefix}-LIFT-ACCESS", lift_id, center_junction, 0.8, 1.8, 3))
+
         for index, (start, end) in enumerate(zip(junction_ids, junction_ids[1:])):
             narrow = index == narrow_index
             edge_id = f"{prefix}-CORRIDOR-{index + 1:02d}"
             add_edge(Edge(
                 edge_id, start, end, round(rng.uniform(1.0, 1.5), 1),
-                0.9 if narrow else 2.4, 1 if narrow else rng.randint(3, 5),
+                1.2 if narrow else 2.4, 1 if narrow else rng.randint(3, 5),
                 is_narrow=narrow,
             ))
 
@@ -175,13 +190,20 @@ def build_generated_building(
             add_edge(Edge(
                 f"STAIR-{side}-F{floor}-F{floor + 1}",
                 f"{lower_prefix}-STAIR-{side}", f"{upper_prefix}-STAIR-{side}",
-                2.0, 1.6, 2, is_stair=True,
+                2.0, 1.6, 2, is_stair=True, is_accessible=False,
             ))
+        add_edge(Edge(
+            f"LIFT-F{floor}-F{floor + 1}",
+            f"{lower_prefix}-LIFT", f"{upper_prefix}-LIFT",
+            2.5, 1.8, 2, is_accessible=True, is_evacuation_lift=True,
+        ))
 
     add_node(Node("G-EXIT-W", 0, 0.2, 6.4, "exit", "West Assembly Exit", exit_capacity=2))
     add_node(Node("G-EXIT-E", 0, 21.8, 7.6, "exit", "East Assembly Exit", exit_capacity=2))
     add_edge(Edge("G-EXIT-LINK-W", "G-STAIR-W", "G-EXIT-W", 1.0, 2.0, 3))
     add_edge(Edge("G-EXIT-LINK-E", "G-STAIR-E", "G-EXIT-E", 1.0, 2.0, 3))
+    add_edge(Edge("G-ACCESSIBLE-EXIT-W", "G-J1", "G-EXIT-W", 1.2, 2.0, 3))
+    add_edge(Edge("G-ACCESSIBLE-EXIT-E", f"G-J{junction_count}", "G-EXIT-E", 1.2, 2.0, 3))
     return Building(nodes=nodes, edges=edges)
 
 
@@ -203,10 +225,17 @@ def validate_building(building: Building) -> list[str]:
             errors.append(f"Edge {edge.id} has a non-positive travel time, width, or capacity")
         floor_a = building.nodes[edge.a].floor
         floor_b = building.nodes[edge.b].floor
-        if floor_a != floor_b and not edge.is_stair:
-            errors.append(f"Cross-floor edge {edge.id} is not marked as a stair")
+        if floor_a != floor_b and not (edge.is_stair or edge.is_evacuation_lift):
+            errors.append(f"Cross-floor edge {edge.id} is not marked as a stair or evacuation lift")
         if edge.is_stair and abs(floor_a - floor_b) != 1:
             errors.append(f"Stair edge {edge.id} does not connect adjacent floors")
+        if edge.is_evacuation_lift:
+            if abs(floor_a - floor_b) != 1:
+                errors.append(f"Evacuation lift edge {edge.id} does not connect adjacent floors")
+            if not edge.is_accessible:
+                errors.append(f"Evacuation lift edge {edge.id} must be marked accessible")
+            if building.nodes[edge.a].kind != "lift" or building.nodes[edge.b].kind != "lift":
+                errors.append(f"Evacuation lift edge {edge.id} must connect lift lobbies")
 
     for node in building.nodes.values():
         if node.floor < 0:
@@ -243,4 +272,10 @@ def validate_building(building: Building) -> list[str]:
         )
         if connecting_stairs < 2:
             errors.append(f"Floors {floor} and {floor + 1} need two independent stair connections")
+        if not any(
+            edge.is_evacuation_lift
+            and {building.nodes[edge.a].floor, building.nodes[edge.b].floor} == {floor, floor + 1}
+            for edge in building.edges.values()
+        ):
+            errors.append(f"Floors {floor} and {floor + 1} need a designated evacuation lift connection")
     return errors

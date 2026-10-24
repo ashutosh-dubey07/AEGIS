@@ -63,6 +63,8 @@ AI is optional and disabled until a model and token are configured. When you cli
 
 - Seeded Office, School, Hospital, and Mall layouts, from 3 to 5 floors, with variable room counts and two stair cores.
 - A Three.js 3D building view with orbit, zoom, floor selection, live markers for every person, selected-person route highlighting, and browser-frame animation between Python simulation updates.
+- Optional inclusive demo personas for wheelchair use, limited mobility, low vision, hard of hearing, and pregnancy support. Profiled people receive higher route/queue priority, suitable movement pacing, and profile-specific route or communication preferences; their markers are pink, while people who need immediate assistance remain dark.
+- Designated step-free passages and simulated evacuation lifts, with wheelchair routes restricted to the mapped accessible graph. Selecting a low-vision persona enlarges route guidance, increases scene focus around that person, and offers spoken turn-by-turn updates through the browser's built-in speech engine.
 - Optional on-demand Hugging Face review of current hazards, queues, reroutes, and the selected person, with evidence labels tied to supplied simulation facts. AI never controls routing.
 - Route guidance, per-person status, queue/assistance counts, event history, and route change counts.
 - Fire/smoke, gas, blocked passage, and earthquake scenarios. Hazard intensity grows with simulation time; new sensor alarms can close passages and cause route replanning.
@@ -84,6 +86,17 @@ The original dashboard remains available as a fallback. Its dependencies are sep
 
 The Streamlit page uses a periodic rerun model. Use the local browser client above for continuous 3D movement and the WebSocket interface.
 
+## Deploy the browser app on Render
+
+The repository includes a `render.yaml` Blueprint for the React/Vite site and FastAPI/WebSocket API. It wires the deployed API URL into the frontend build and allows the deployed site through API CORS.
+
+1. Push the repository's `main` branch to GitHub.
+2. In the [Render Dashboard](https://dashboard.render.com/), choose **New → Blueprint** and connect `ashutosh-dubey07/AEGIS`.
+3. Select the `main` branch, review the two services (`aegis-api` and `aegis-web`), then apply the Blueprint.
+4. When both deployments finish, open the `aegis-web` URL shown in Render.
+
+The free API service can sleep when idle, so its first request may take longer. Simulation sessions are held in memory and reset when the API restarts; this setup is for a public demo, not persistent or operational emergency response.
+
 ## Project map
 
 - `aegis/` — simulation models, seeded layouts, sensor state, route planning, movement, queues, hazard growth, and visualization helpers.
@@ -101,4 +114,4 @@ Run the existing standard-library tests from the project folder:
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-The routing engine is a transparent weighted-graph heuristic with capacity, closure, caution, and congestion costs. The floor plans and hazard intensity are synthetic demo mechanics; they do not model building code, measured fire/smoke spread, mobility profiles, or actual sensor uncertainty.
+The routing engine is a transparent weighted-graph heuristic with capacity, closure, caution, congestion, and persona preference costs. The floor plans, designated evacuation lifts, mobility/communication profiles, and hazard intensity are synthetic demo mechanics. An evacuation lift is treated as usable only because the generated scenario explicitly marks it as an available simulated evacuation lift; this must never be read as a real building's lift safety status. The demo does not validate building-code compliance, measured fire/smoke spread, clinical needs, or actual sensor uncertainty.

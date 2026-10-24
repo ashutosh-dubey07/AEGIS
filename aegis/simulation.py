@@ -9,7 +9,15 @@ from collections import Counter
 import heapq
 
 from aegis.building import build_sample_building
-from aegis.models import Building, Event, Hazard, Person, SimulationState
+from aegis.models import (
+    INCLUSIVE_DEMO_PROFILES,
+    PERSON_PROFILE_SPECS,
+    Building,
+    Event,
+    Hazard,
+    Person,
+    SimulationState,
+)
 from aegis.routing import Route, find_route
 from aegis.sensors import (
     create_sensor_network,
@@ -26,6 +34,14 @@ INCIDENT_TYPES = ("Fire / smoke", "Gas leak", "Blocked passage", "Earthquake")
 HAZARD_OPTIONS = (RANDOM_INCIDENT, *INCIDENT_TYPES)
 INTENSITY_STAGE_THRESHOLDS = (35.0, 60.0, 85.0)
 ACTIVE_STATUSES = {"Waiting", "Moving", "Queued", "Needs Assistance"}
+
+
+def _movement_ticks_for_edge(person: Person, edge) -> int:
+    speed = PERSON_PROFILE_SPECS[person.accessibility_profile].movement_speed_factor
+    return max(
+        MOVEMENT_TICKS_PER_TRAVEL_UNIT,
+        int(math.ceil(edge.travel_time * MOVEMENT_TICKS_PER_TRAVEL_UNIT / speed)),
+    )
 
 
 def log_event(state: SimulationState, kind: str, message: str) -> None:
@@ -64,11 +80,13 @@ def _hazard_distance(state: SimulationState, start: str) -> float:
 def _refresh_priorities(state: SimulationState) -> None:
     for person in state.people:
         distance = _hazard_distance(state, person.current_node)
-        person.priority_score = 1.0 / (0.5 + distance)
+        profile = PERSON_PROFILE_SPECS[person.accessibility_profile]
+        person.priority_score = profile.priority_bonus + 1.0 / (0.5 + distance)
 
 
 def _route_for_person(
     state: SimulationState,
+    person: Person,
     start: str,
     edge_load: Counter,
     exit_load: Counter,
@@ -82,6 +100,7 @@ def _route_for_person(
         caution_edges=state.caution_edges,
         edge_load=edge_load,
         exit_load=exit_load,
+        person_profile=person.accessibility_profile,
     )
 
 
@@ -238,7 +257,7 @@ def assign_group_routes(
         # prefix and plan the new route from its far end. This prevents a
         # closure or second alarm from moving them back to the previous node.
         plan_start = next_node if in_flight else person.current_node
-        route = _route_for_person(state, plan_start, edge_load, exit_load)
+        route = _route_for_person(state, person, plan_start, edge_load, exit_load)
         if route is None:
             if in_flight:
                 person.route = [person.current_node, next_node]
@@ -307,6 +326,7 @@ def create_scenario(
     incident_type: str | None = None,
     *,
     building: Building | None = None,
+    include_accessibility_personas: bool = False,
 ) -> SimulationState:
     if not 1 <= person_count <= 20:
         raise ValueError("person_count must be between 1 and 20")
@@ -381,7 +401,15 @@ def create_scenario(
     for index in range(person_count):
         node = safe_rooms[index]
         person_id = f"P{index + 1:02d}"
-        state.people.append(Person(person_id, node.id, node.id))
+        accessibility_profile = (
+            INCLUSIVE_DEMO_PROFILES[index % len(INCLUSIVE_DEMO_PROFILES)]
+            if include_accessibility_personas and index < len(INCLUSIVE_DEMO_PROFILES)
+            else "Standard"
+        )
+        state.people.append(Person(
+            person_id, node.id, node.id,
+            accessibility_profile=accessibility_profile,
+        ))
 
     log_event(
         state, "scenario",
@@ -491,10 +519,7 @@ def step_simulation(state: SimulationState) -> None:
 
         if person.backtracking:
             edge = state.building.edges[person.route_edges[0]]
-            ticks_for_edge = max(
-                MOVEMENT_TICKS_PER_TRAVEL_UNIT,
-                int(math.ceil(edge.travel_time * MOVEMENT_TICKS_PER_TRAVEL_UNIT)),
-            )
+            ticks_for_edge = _movement_ticks_for_edge(person, edge)
             person.movement_progress = max(0.0, person.movement_progress - 1.0 / ticks_for_edge)
             if person.movement_progress <= 1e-9:
                 person.movement_progress = 0.0
@@ -529,10 +554,7 @@ def step_simulation(state: SimulationState) -> None:
         person.queued_edge = None
         # One beat is one wall-clock second in the app. Corridors take about
         # 12–15 seconds; stair links take about 24 seconds.
-        ticks_for_edge = max(
-            MOVEMENT_TICKS_PER_TRAVEL_UNIT,
-            int(math.ceil(edge.travel_time * MOVEMENT_TICKS_PER_TRAVEL_UNIT)),
-        )
+        ticks_for_edge = _movement_ticks_for_edge(person, edge)
         person.movement_progress = min(1.0, person.movement_progress + 1.0 / ticks_for_edge)
         if person.movement_progress < 1.0 - 1e-9:
             person.status = "Moving"

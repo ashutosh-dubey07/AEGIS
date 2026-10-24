@@ -20,7 +20,10 @@ export default function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [selectedId, setSelectedId] = useState("P01");
   const [floorFilter, setFloorFilter] = useState<FloorFilter>("all");
-  const [followPerson, setFollowPerson] = useState(true);
+  const [followPerson, setFollowPerson] = useState(false);
+  const [includeAccessibilityPersonas, setIncludeAccessibilityPersonas] = useState(true);
+  const [voiceGuidance, setVoiceGuidance] = useState(false);
+  const spokenInstructionRef = useRef("");
   const [personCount, setPersonCount] = useState(8);
   const [seed, setSeed] = useState("");
   const [incidentType, setIncidentType] = useState("Random incident");
@@ -76,13 +79,14 @@ export default function App() {
         building_profile: profile,
         floors,
         rooms_per_wing: roomsPerWing,
+        include_accessibility_personas: includeAccessibilityPersonas,
         ...overrides,
       };
       const next = stamp(await createScenario(options));
       acceptSnapshot(next);
       setSelectedId(next.people[0]?.id ?? "");
       setFloorFilter("all");
-      setFollowPerson(true);
+      setFollowPerson(false);
       setAiReview(null);
       connect(next.session_id);
       setNotice(`New ${next.profile.toLowerCase()} scenario ready · seed ${next.seed}.`);
@@ -91,13 +95,20 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [acceptSnapshot, connect, floors, incidentType, personCount, profile, roomsPerWing, seed]);
+  }, [acceptSnapshot, connect, floors, incidentType, includeAccessibilityPersonas, personCount, profile, roomsPerWing, seed]);
 
   useEffect(() => {
     let mounted = true;
     Promise.all([
       getConfig(),
-      createScenario({ person_count: 8, incident_type: "Random incident", building_profile: "Office" }),
+      createScenario({
+        person_count: 8,
+        incident_type: "Random incident",
+        building_profile: "Office",
+        floors: 3,
+        rooms_per_wing: 4,
+        include_accessibility_personas: true,
+      }),
     ]).then(([nextConfig, nextSnapshot]) => {
       if (!mounted) return;
       setConfig(nextConfig);
@@ -120,10 +131,27 @@ export default function App() {
   );
   useEffect(() => setAiReview(null), [selectedId]);
   useEffect(() => {
-    if (!followPerson || !selectedPerson || !snapshot) return;
-    const floor = snapshot.nodes.find((node) => node.id === selectedPerson.current_node)?.floor;
-    if (floor !== undefined && floorFilter !== floor) setFloorFilter(floor);
-  }, [followPerson, floorFilter, selectedPerson, snapshot]);
+    if (!voiceGuidance || selectedPerson?.accessibility_profile !== "Low vision" || !snapshot) {
+      if (!voiceGuidance) spokenInstructionRef.current = "";
+      if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+      return;
+    }
+    const key = [
+      snapshot.session_id,
+      selectedPerson.id, selectedPerson.status, selectedPerson.current_node,
+      selectedPerson.route[1] ?? "", selectedPerson.assigned_exit ?? "",
+      selectedPerson.reroutes, selectedPerson.backtracking,
+    ].join("|");
+    if (key === spokenInstructionRef.current) return;
+    spokenInstructionRef.current = key;
+    speakRouteInstruction(selectedPerson, snapshot);
+  }, [selectedPerson, snapshot, voiceGuidance]);
+  useEffect(() => {
+    if (!voiceGuidance && "speechSynthesis" in window) window.speechSynthesis.cancel();
+    return () => {
+      if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+    };
+  }, [voiceGuidance]);
   const directTargets = useMemo(() => new Set(
     snapshot?.hazards.map((hazard) => `${hazard.target_kind}:${hazard.target_id}`) ?? [],
   ), [snapshot]);
@@ -221,7 +249,7 @@ export default function App() {
   }
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell ${selectedPerson?.accessibility_profile === "Low vision" ? "accessible-low-vision" : ""}`}>
       <header className="topbar">
         <div aria-hidden="true" />
         <div className="brand-lockup">
@@ -262,7 +290,7 @@ export default function App() {
               return <article className="assistance-case" key={person.id}>
                 <div className="assistance-case-heading">
                   <div><strong>{person.id}</strong><span>{node?.label ?? person.current_node} · {node?.floor === 0 ? "Ground" : `Floor ${node?.floor ?? "?"}`}</span></div>
-                  <button className="assistance-inspect" onClick={() => { setSelectedId(person.id); setFollowPerson(true); }}>Inspect</button>
+                  <button className="assistance-inspect" onClick={() => { setSelectedId(person.id); setFloorFilter("all"); setFollowPerson(true); }}>Inspect</button>
                 </div>
                 <p className="assistance-reason">{person.assistance_reason ?? "No safe route to an exit is currently available."}</p>
                 {person.assistance_blockers.length > 0 && <ul className="assistance-blockers">
@@ -283,7 +311,7 @@ export default function App() {
               <div className="assistance-location" key={group.nodeId}>
                 <div><strong>{group.label}</strong><span>{group.floor === 0 ? "Ground" : `Floor ${group.floor}`} · {group.people.length} {group.people.length === 1 ? "person" : "people"}</span></div>
                 <div className="assistance-person-chips">
-                  {group.people.map((person) => <button key={person.id} onClick={() => { setSelectedId(person.id); setFollowPerson(true); }}>{person.id}</button>)}
+                  {group.people.map((person) => <button key={person.id} onClick={() => { setSelectedId(person.id); setFloorFilter("all"); setFollowPerson(true); }}>{person.id}</button>)}
                 </div>
               </div>
             ))}
@@ -314,7 +342,8 @@ export default function App() {
                     snapshot={snapshot}
                     selectedId={selectedId}
                     floorFilter={floorFilter}
-                    onSelectPerson={(id) => { setSelectedId(id); setFollowPerson(true); }}
+                    followPerson={followPerson}
+                    onSelectPerson={(id) => { setSelectedId(id); setFloorFilter("all"); setFollowPerson(true); }}
                   />
                 ) : <div className="scene-loading">Starting local simulation…</div>}
                 <div className="scene-scale">3D BUILDING MODEL <span>·</span> LIVE ROUTES</div>
@@ -323,21 +352,21 @@ export default function App() {
                 <div className="eyebrow">PERSON VIEW</div>
                 <label className="field-label" htmlFor="person-select">Inspect individual</label>
                 <div className="select-wrap">
-                  <select id="person-select" value={selectedId} onChange={(event) => setSelectedId(event.target.value)}>
-                    {snapshot?.people.map((person) => <option key={person.id} value={person.id}>{person.id} · {snapshot.nodes.find((node) => node.id === person.current_node)?.label ?? person.current_node}</option>)}
+                  <select id="person-select" value={selectedId} onChange={(event) => { setSelectedId(event.target.value); setFloorFilter("all"); setFollowPerson(true); }}>
+                    {snapshot?.people.map((person) => <option key={person.id} value={person.id}>{person.id} · {person.accessibility_profile} · {snapshot.nodes.find((node) => node.id === person.current_node)?.label ?? person.current_node}</option>)}
                   </select><ChevronDown size={15} />
                 </div>
-                <label className="toggle-line"><input type="checkbox" checked={followPerson} onChange={(event) => setFollowPerson(event.target.checked)} /><span>Follow their floor</span></label>
-                {selectedPerson && <PersonCard person={selectedPerson} snapshot={snapshot!} />}
+                <label className="toggle-line"><input type="checkbox" checked={followPerson} onChange={(event) => setFollowPerson(event.target.checked)} /><span>Focus selected person</span></label>
+                {selectedPerson && <PersonCard person={selectedPerson} snapshot={snapshot!} voiceGuidance={voiceGuidance} onVoiceGuidanceChange={setVoiceGuidance} />}
                 <div className="person-rail-hint">Select a marker in the building or use this list.</div>
               </aside>
             </div>
             <div className="map-legend">
-              <Legend color="#18834b" label="Person" /><Legend color="#7b4bb7" label="Selected person" />
+              <Legend color="#18834b" label="Standard person" /><Legend color="#db5b91" label="Accessibility profile" /><Legend color="#7b4bb7" label="Selected person outline" />
               <Legend color="#171a1d" label="Needs assistance" />
               <Legend color="#3478c6" label="Route ahead" /><Legend color="#8995a3" label="Covered" />
               <Legend color="#bf4545" label="Closed / alarm" /><Legend color="#cf8b28" label="Sensor / caution" />
-              <Legend color="#19816e" label="Exit" />
+              <Legend color="#4d789d" label="Evacuation lift" /><Legend color="#19816e" label="Exit" />
             </div>
           </section>
 
@@ -372,6 +401,7 @@ export default function App() {
               <Field label="People"><select value={personCount} onChange={(event) => setPersonCount(Number(event.target.value))}>{Array.from({ length: 20 }, (_, index) => index + 1).map((value) => <option key={value}>{value}</option>)}</select></Field>
               <Field label="Replay seed"><input inputMode="numeric" placeholder="Random" value={seed} onChange={(event) => setSeed(event.target.value.replace(/[^0-9]/g, ""))} /></Field>
             </div>
+            <label className="toggle-line inclusive-toggle"><input type="checkbox" checked={includeAccessibilityPersonas} onChange={(event) => setIncludeAccessibilityPersonas(event.target.checked)} /><span>Include wheelchair, mobility, sensory, and pregnancy support profiles</span></label>
             <button className="button button-primary full-width" onClick={() => void createNewScenario()} disabled={busy}>
               <Plus size={16} /> Generate building and scenario
             </button>
@@ -439,14 +469,32 @@ function Legend({ color, label }: { color: string; label: string }) {
   return <span className="legend-item"><i style={{ background: color }} />{label}</span>;
 }
 
-function PersonCard({ person, snapshot }: { person: Person; snapshot: Snapshot }) {
+function PersonCard({ person, snapshot, voiceGuidance, onVoiceGuidanceChange }: {
+  person: Person;
+  snapshot: Snapshot;
+  voiceGuidance: boolean;
+  onVoiceGuidanceChange: (enabled: boolean) => void;
+}) {
   const node = snapshot.nodes.find((item) => item.id === person.current_node);
   const exit = snapshot.nodes.find((item) => item.id === person.assigned_exit);
+  const speechSupported = "speechSynthesis" in window;
   return <div className="person-mini-card">
     <div className="person-mini-head"><span className={`status-indicator status-${person.status.toLowerCase().replaceAll(" ", "-")}`} />{person.status}</div>
     <div className="person-mini-location">{node?.label ?? person.current_node}</div>
+    <div className="profile-field-label">ACCESSIBILITY PROFILE</div>
+    <div className="person-profile-name">{person.accessibility_profile}</div>
+    <div className="person-support-copy">{person.support_needs}</div>
     <div className="person-mini-meta"><span>Exit</span><b>{exit?.label ?? "No safe exit"}</b></div>
-    <div className="person-mini-meta"><span>Priority</span><b>{person.priority.toFixed(2)}</b></div>
+    <div className="person-mini-meta"><span>Priority</span><b>{person.priority.toFixed(2)} · {person.priority_reason}</b></div>
+    <div className="person-communication" role="status">{person.communication_mode}</div>
+    {person.accessibility_profile === "Low vision" && <button
+      className="button button-soft full-width voice-guidance-toggle"
+      type="button"
+      disabled={!speechSupported}
+      aria-pressed={voiceGuidance}
+      onClick={() => onVoiceGuidanceChange(!voiceGuidance)}
+    >{voiceGuidance ? "Stop voice guidance" : "Start voice guidance"}</button>}
+    {person.accessibility_profile === "Hard of hearing" && <div className="visual-alert-note" role="status">Visual and written alert mode is active for this profile.</div>}
     {person.backtracking && <div className="backtrack-note"><AlertTriangle size={13} /> Turning back to the last safe node</div>}
   </div>;
 }
@@ -455,13 +503,58 @@ function NavigationCard({ person, snapshot }: { person: Person; snapshot: Snapsh
   const routeLabels = person.route.map((id) => snapshot.nodes.find((node) => node.id === id)?.label ?? id);
   const nextLabel = routeLabels[1];
   const exit = snapshot.nodes.find((node) => node.id === person.assigned_exit)?.label ?? "No safe exit";
+  const nextNode = person.route[1] ? snapshot.nodes.find((node) => node.id === person.route[1]) : undefined;
+  const nextEdge = person.route_edges[0] ? snapshot.edges.find((edge) => edge.id === person.route_edges[0]) : undefined;
+  const currentNode = snapshot.nodes.find((node) => node.id === person.current_node);
+  const action = person.status === "Evacuated" ? `Arrived at ${exit}`
+    : person.status === "Needs Assistance" ? "No safe route · request human assistance"
+      : person.backtracking ? "Walk back to the previous safe junction"
+        : nextEdge?.is_evacuation_lift && nextNode && currentNode?.floor !== nextNode.floor ? `Take the evacuation lift to ${floorName(nextNode.floor)}`
+          : nextNode?.kind === "lift" ? `Proceed to the evacuation lift lobby · ${nextNode.label}`
+            : nextEdge?.is_stair && nextNode ? `Use the stairs toward ${floorName(nextNode.floor)}`
+              : nextLabel ? `Continue toward ${nextLabel}` : "Wait for assistance";
   return <div className="navigation-card">
-    <div className="next-instruction"><span className="next-kicker">NEXT ACTION</span><strong>{person.status === "Evacuated" ? `Arrived at ${exit}` : person.backtracking ? "Walk back to the previous safe junction" : nextLabel ? `Continue toward ${nextLabel}` : "Wait for assistance"}</strong></div>
+    <div className="next-instruction" aria-live="polite"><span className="next-kicker">NEXT ACTION</span><strong>{action}</strong></div>
     <div className="route-chips">
       {routeLabels.length ? routeLabels.map((label, index) => <span className={index === 0 ? "current" : ""} key={`${label}-${index}`}>{label}</span>) : <span>No remaining route</span>}
     </div>
     <div className="navigation-meta"><span>Destination <b>{exit}</b></span><span>Reroutes <b>{person.reroutes}</b></span><span>Movement <b>{Math.round(person.movement_progress * 100)}%</b></span></div>
   </div>;
+}
+
+function floorName(floor: number) {
+  return floor === 0 ? "Ground floor" : `Floor ${floor}`;
+}
+
+function spokenRouteInstruction(person: Person, snapshot: Snapshot) {
+  const current = snapshot.nodes.find((node) => node.id === person.current_node);
+  const next = person.route[1] ? snapshot.nodes.find((node) => node.id === person.route[1]) : undefined;
+  const edge = person.route_edges[0] ? snapshot.edges.find((item) => item.id === person.route_edges[0]) : undefined;
+  const currentLabel = current?.label ?? "your current location";
+  if (person.status === "Evacuated") return `You have reached the safe exit, ${currentLabel}.`;
+  if (person.status === "Needs Assistance") return `Stop at ${currentLabel}. No safe route is available in this simulation. Request human assistance and share your location.`;
+  if (person.backtracking) return `The passage ahead is unsafe. Turn back toward ${currentLabel} and wait for the new route.`;
+  if (!next) return `Wait at ${currentLabel} for updated instructions.`;
+  if (edge?.is_evacuation_lift && current?.floor !== next.floor) return `Take the designated evacuation lift to ${floorName(next.floor)}.`;
+  if (next.kind === "lift") return `Proceed to the designated evacuation lift lobby at ${next.label}.`;
+  if (edge?.is_stair) return `Use the stairs toward ${floorName(next.floor)}.`;
+  if (person.status === "Queued") return `Wait safely at ${currentLabel}. You are queued for the next passage.`;
+  return `Continue toward ${next.label}. Follow the marked route to ${person.assigned_exit ? snapshot.nodes.find((node) => node.id === person.assigned_exit)?.label ?? "the assigned exit" : "the assigned exit"}.`;
+}
+
+function speakRouteInstruction(person: Person, snapshot: Snapshot) {
+  if (!("speechSynthesis" in window)) return;
+  const engine = window.speechSynthesis;
+  engine.cancel();
+  const utterance = new SpeechSynthesisUtterance(spokenRouteInstruction(person, snapshot));
+  const voices = engine.getVoices();
+  utterance.voice = voices.find((voice) => voice.lang.toLowerCase() === "en-in")
+    ?? voices.find((voice) => voice.lang.toLowerCase().startsWith("en"))
+    ?? null;
+  utterance.lang = utterance.voice?.lang ?? "en-IN";
+  utterance.rate = 0.94;
+  utterance.pitch = 1;
+  engine.speak(utterance);
 }
 
 function AIReviewCard({ review, currentTick }: { review: AIReview; currentTick: number }) {

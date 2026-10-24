@@ -9,7 +9,7 @@ import random
 import streamlit as st
 
 from aegis.building import validate_building
-from aegis.models import SimulationState
+from aegis.models import PERSON_PROFILE_SPECS, SimulationState
 from aegis.simulation import (
     HAZARD_OPTIONS,
     create_scenario,
@@ -32,9 +32,9 @@ def _person_by_id(state: SimulationState, person_id: str | None):
     return next((person for person in state.people if person.id == person_id), None)
 
 
-def _new_scenario(count: int, seed_value: str, incident_type: str) -> SimulationState:
+def _new_scenario(count: int, seed_value: str, incident_type: str, include_accessibility_personas: bool = True) -> SimulationState:
     seed = int(seed_value.strip()) if seed_value.strip() else None
-    return create_scenario(count, seed, incident_type)
+    return create_scenario(count, seed, incident_type, include_accessibility_personas=include_accessibility_personas)
 
 
 def _exit_label(state: SimulationState, exit_id: str | None) -> str:
@@ -82,7 +82,7 @@ def _person_label(state: SimulationState, person_id: str) -> str:
 if "person_count" not in st.session_state:
     st.session_state.person_count = 8
 if "sim_state" not in st.session_state:
-    st.session_state.sim_state = create_scenario(st.session_state.person_count)
+    st.session_state.sim_state = create_scenario(st.session_state.person_count, include_accessibility_personas=True)
 if "selected_person_id" not in st.session_state:
     st.session_state.selected_person_id = st.session_state.sim_state.people[0].id
 if "selected_floor" not in st.session_state:
@@ -117,12 +117,19 @@ with st.sidebar:
         key="hazard_type_input",
         help="The selected hazard type is fixed; its location is chosen randomly for each new scenario.",
     )
+    st.checkbox(
+        "Include assisted evacuation personas",
+        value=True,
+        key="include_accessibility_personas",
+        help="Adds illustrative wheelchair, limited-mobility, low-vision, hard-of-hearing, and pregnancy-support profiles when people are available.",
+    )
     if st.button("Create Scenario", type="primary", width="stretch"):
         try:
             state = _new_scenario(
                 int(st.session_state.person_count),
                 st.session_state.seed_input,
                 st.session_state.hazard_type_input,
+                st.session_state.include_accessibility_personas,
             )
             st.session_state.sim_state = state
             st.session_state.selected_person_id = state.people[0].id
@@ -134,7 +141,10 @@ with st.sidebar:
     state = st.session_state.sim_state
     if st.button("Reset this scenario", width="stretch"):
         incident_type = state.hazards[0].incident_type if state.hazards else None
-        state = create_scenario(len(state.people), state.seed, incident_type)
+        state = create_scenario(
+            len(state.people), state.seed, incident_type,
+            include_accessibility_personas=st.session_state.get("include_accessibility_personas", True),
+        )
         st.session_state.sim_state = state
         st.session_state.selected_person_id = state.people[0].id
         st.session_state.selected_floor = state.building.nodes[state.people[0].current_node].floor
@@ -329,6 +339,8 @@ def render_live_dashboard() -> None:
         "Scroll to zoom; drag to pan."
     )
 
+    st.caption("Pink markers indicate an accessibility profile; dark markers indicate a person who currently needs assistance.")
+
     detail_col, navigation_col = st.columns([1, 1.2])
     with detail_col:
         st.subheader(f"Person detail · {selected.id if selected else '—'}")
@@ -340,7 +352,12 @@ def render_live_dashboard() -> None:
                 st.warning(f"Passage ahead closed. Walking back to {location} before choosing another route.")
             st.write(f"**Starting location:** {current.building.nodes[selected.start_node].label}")
             st.write(f"**Status:** {selected.status}")
-            st.write(f"**Urgency score:** {selected.priority_score:.2f} · higher means closer to the detected hazard")
+            person_profile = PERSON_PROFILE_SPECS[selected.accessibility_profile]
+            st.write(f"**Profile:** {selected.accessibility_profile}")
+            st.write(f"**Support needs:** {person_profile.support_needs}")
+            st.write(f"**Priority reason:** {person_profile.priority_reason}")
+            st.write(f"**Priority score:** {selected.priority_score:.2f} · profile priority plus hazard proximity")
+            st.caption(f"Communication adaptation: {person_profile.communication_mode}")
             st.write(f"**Assigned exit:** {destination}")
             st.write(f"**Personal reroutes:** {selected.reroutes}")
             journey = " → ".join(FLOOR_LABELS[item] for item in route_floor_sequence(current, selected))

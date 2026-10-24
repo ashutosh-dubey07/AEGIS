@@ -6,6 +6,71 @@ from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
+class PersonProfileSpec:
+    """Illustrative movement and interface needs for the demo personas."""
+
+    priority_bonus: float = 0.0
+    movement_speed_factor: float = 1.0
+    step_free_route: bool = False
+    stair_cost_multiplier: float = 1.0
+    caution_cost_multiplier: float = 1.0
+    support_needs: str = "Standard evacuation guidance"
+    communication_mode: str = "Standard visual instructions"
+    priority_reason: str = "Standard routing priority"
+
+
+PERSON_PROFILE_SPECS: dict[str, PersonProfileSpec] = {
+    "Standard": PersonProfileSpec(),
+    "Wheelchair user": PersonProfileSpec(
+        priority_bonus=3.5,
+        movement_speed_factor=0.82,
+        step_free_route=True,
+        support_needs="Step-free route using mapped accessible passages and evacuation lifts",
+        communication_mode="Clear, large-text visual directions",
+        priority_reason="Step-free evacuation support",
+    ),
+    "Limited mobility": PersonProfileSpec(
+        priority_bonus=3.0,
+        movement_speed_factor=0.68,
+        stair_cost_multiplier=1.8,
+        support_needs="Reduced movement pace; avoid unnecessary stair links",
+        communication_mode="Large text with one route action at a time",
+        priority_reason="Mobility assistance and slower movement",
+    ),
+    "Low vision": PersonProfileSpec(
+        priority_bonus=2.8,
+        movement_speed_factor=0.84,
+        caution_cost_multiplier=1.35,
+        support_needs="High-contrast route with explicit landmark directions",
+        communication_mode="High-contrast, enlarged text with spoken-direction cue",
+        priority_reason="Accessible navigation support",
+    ),
+    "Hard of hearing": PersonProfileSpec(
+        priority_bonus=2.8,
+        support_needs="Visual confirmation of alarms and route changes",
+        communication_mode="Visual and text alerts; no audio-only instruction",
+        priority_reason="Accessible alarm and communication support",
+    ),
+    "Pregnancy support": PersonProfileSpec(
+        priority_bonus=2.8,
+        movement_speed_factor=0.84,
+        caution_cost_multiplier=1.2,
+        support_needs="Higher route priority with a lower-exertion route preference",
+        communication_mode="Clear, large-text visual directions",
+        priority_reason="Pregnancy support profile",
+    ),
+}
+
+INCLUSIVE_DEMO_PROFILES = (
+    "Wheelchair user",
+    "Limited mobility",
+    "Low vision",
+    "Hard of hearing",
+    "Pregnancy support",
+)
+
+
+@dataclass(frozen=True)
 class Node:
     id: str
     floor: int
@@ -26,6 +91,8 @@ class Edge:
     capacity_per_step: int
     is_stair: bool = False
     is_narrow: bool = False
+    is_accessible: bool = True
+    is_evacuation_lift: bool = False
 
 
 @dataclass
@@ -104,8 +171,11 @@ class Person:
     traversed_edges: list[str] = field(default_factory=list)
     movement_progress: float = 0.0
     backtracking: bool = False
+    accessibility_profile: str = "Standard"
 
     def __post_init__(self) -> None:
+        if self.accessibility_profile not in PERSON_PROFILE_SPECS:
+            self.accessibility_profile = "Standard"
         if not self.traversed_nodes:
             self.traversed_nodes = [self.current_node]
 
