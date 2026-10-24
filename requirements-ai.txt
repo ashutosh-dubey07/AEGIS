@@ -1,0 +1,2 @@
+# Optional AI review uses Python's standard-library HTTP client.
+# No additional packages are required.

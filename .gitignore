@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.streamlit/secrets.toml
+.env
+.env.*
+!.env.example
+web/node_modules/
+web/dist/
+web/.vite/
+
+# Local presentation build and staging files
+.presentation-build/
+.presentation-staging/
